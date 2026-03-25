@@ -27,21 +27,6 @@ LV_IMG_DECLARE(flora_00);
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
 
-/*
- * 레이아웃 (실제 보이는 68x68 기준):
- *
- *  ┌─────────────────────────────────────┐
- *  │  flora_00 이미지 (140x68 → 잘림)   │
- *  │                                     │
- *  │  ┌──────────────┐                  │
- *  │  │ 🔋 배터리    │ ← 우상단 오버레이 │
- *  │  │ 📶 연결      │                  │
- *  │  └──────────────┘                  │
- *  └─────────────────────────────────────┘
- *
- * canvas/rotate 없이 lv_label + lv_bar로 직접 이미지 위에 오버드로우
- */
-
 struct output_status_state {
     struct zmk_endpoint_instance selected_endpoint;
     int active_profile_index;
@@ -49,16 +34,16 @@ struct output_status_state {
     bool active_profile_bonded;
 };
 
-/* 위젯 내 LVGL 오브젝트 인덱스 */
-#define OBJ_IDX_IMAGE        0
-#define OBJ_IDX_BAT_OUTLINE  1
-#define OBJ_IDX_BAT_FILL     2
-#define OBJ_IDX_BAT_TIP      3
-#define OBJ_IDX_BOLT_LABEL   4
-#define OBJ_IDX_CONN_LABEL   5
+/* 오브젝트 child 인덱스 */
+#define OBJ_IDX_IMAGE       0
+#define OBJ_IDX_BAT_OUTLINE 1
+#define OBJ_IDX_BAT_FILL    2
+#define OBJ_IDX_BAT_TIP     3
+#define OBJ_IDX_BOLT_LABEL  4
+#define OBJ_IDX_CONN_LABEL  5
 
-/* 배터리 게이지 위치 (이미지 위 우상단, 화면 좌표 기준) */
-#define BAT_X   34   /* 우측에서 34px 안쪽 */
+/* 배터리 위치 (화면 우상단 기준) */
+#define BAT_X   34
 #define BAT_Y    2
 #define BAT_W   28
 #define BAT_H   12
@@ -70,25 +55,20 @@ struct output_status_state {
 #define CONN_Y   0
 
 static void update_battery(lv_obj_t *widget, const struct status_state *state) {
-    /* 배터리 외곽 */
-    lv_obj_t *outline = lv_obj_get_child(widget, OBJ_IDX_BAT_OUTLINE);
-    /* 배터리 채움 바 */
-    lv_obj_t *fill = lv_obj_get_child(widget, OBJ_IDX_BAT_FILL);
-    /* 배터리 팁 */
-    lv_obj_t *tip = lv_obj_get_child(widget, OBJ_IDX_BAT_TIP);
-    /* 번개 라벨 */
+    lv_obj_t *fill      = lv_obj_get_child(widget, OBJ_IDX_BAT_FILL);
     lv_obj_t *bolt_label = lv_obj_get_child(widget, OBJ_IDX_BOLT_LABEL);
 
-    (void)outline; /* 외곽선은 스타일로 고정, 위치만 설정됨 */
-    (void)tip;
-
-    /* 배터리 잔량에 따라 채움 너비 조정 (최소 2px) */
+    /* 배터리 잔량에 따라 채움 너비 조정 */
     int fill_w = (state->battery * (BAT_W - 4)) / 100;
     if (fill_w < 2) fill_w = 2;
     lv_obj_set_size(fill, fill_w, BAT_H - 4);
 
-    /* 충전 중이면 번개 아이콘 표시 */
-    lv_obj_set_hidden(bolt_label, !state->charging);
+    /* 충전 중이면 번개 아이콘 표시 — LVGL v8에서는 lv_obj_add/clear_flag 사용 */
+    if (state->charging) {
+        lv_obj_clear_flag(bolt_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(bolt_label, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void update_connection(lv_obj_t *widget, const struct status_state *state) {
@@ -181,15 +161,14 @@ ZMK_SUBSCRIPTION(widget_output_status, zmk_ble_active_profile_changed);
 int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
     widget->obj = lv_obj_create(parent);
     lv_obj_set_size(widget->obj, 68, 68);
-    /* 부모 오브젝트 배경/테두리 제거 */
     lv_obj_set_style_bg_opa(widget->obj, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(widget->obj, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(widget->obj, 0, LV_PART_MAIN);
 
-    /* Child 0: flora_00 이미지 — 우측 끝에서 140px 왼쪽 배치 → 우측 68px가 보임 */
+    /* Child 0: flora_00 이미지 (x=-72 → 우측 68px만 보임) */
     lv_obj_t *art = lv_img_create(widget->obj);
     lv_img_set_src(art, &flora_00);
-    lv_obj_set_pos(art, -(140 - 68), 0);  /* x = -72 */
+    lv_obj_set_pos(art, -(140 - 68), 0);
 
     /* Child 1: 배터리 외곽선 */
     lv_obj_t *bat_outline = lv_obj_create(widget->obj);
@@ -203,9 +182,10 @@ int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
 
     /* Child 2: 배터리 채움 바 */
     lv_obj_t *bat_fill = lv_obj_create(widget->obj);
-    lv_obj_set_size(bat_fill, (75 * (BAT_W - 4)) / 100, BAT_H - 4);  /* 초기값 75% */
+    lv_obj_set_size(bat_fill, (75 * (BAT_W - 4)) / 100, BAT_H - 4);
     lv_obj_set_pos(bat_fill, BAT_X + 2, BAT_Y + 2);
     lv_obj_set_style_bg_color(bat_fill, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bat_fill, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(bat_fill, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(bat_fill, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(bat_fill, 0, LV_PART_MAIN);
@@ -215,17 +195,18 @@ int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
     lv_obj_set_size(bat_tip, BAT_TIP_W, BAT_TIP_H);
     lv_obj_set_pos(bat_tip, BAT_X + BAT_W, BAT_Y + (BAT_H - BAT_TIP_H) / 2);
     lv_obj_set_style_bg_color(bat_tip, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bat_tip, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(bat_tip, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(bat_tip, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(bat_tip, 1, LV_PART_MAIN);
 
-    /* Child 4: 충전 번개 아이콘 */
+    /* Child 4: 충전 번개 아이콘 (montserrat_16은 이미 활성화되어 있음) */
     lv_obj_t *bolt_label = lv_label_create(widget->obj);
     lv_label_set_text(bolt_label, LV_SYMBOL_CHARGE);
     lv_obj_set_style_text_color(bolt_label, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(bolt_label, &lv_font_montserrat_10, LV_PART_MAIN);
-    lv_obj_set_pos(bolt_label, BAT_X + 8, BAT_Y - 1);
-    lv_obj_set_hidden(bolt_label, true);  /* 충전 중일 때만 표시 */
+    lv_obj_set_style_text_font(bolt_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_pos(bolt_label, BAT_X + 6, BAT_Y - 2);
+    lv_obj_add_flag(bolt_label, LV_OBJ_FLAG_HIDDEN);  /* 초기에 숨김 */
 
     /* Child 5: 연결 상태 아이콘 */
     lv_obj_t *conn_label = lv_label_create(widget->obj);
