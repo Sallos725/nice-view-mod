@@ -18,16 +18,29 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/events/battery_state_changed.h>
 #include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/events/endpoint_changed.h>
-#include <zmk/events/layer_state_changed.h>
 #include <zmk/usb.h>
 #include <zmk/ble.h>
 #include <zmk/endpoints.h>
 #include <zmk/keymap.h>
 
-/* flora_00 is defined in art.c */
 LV_IMG_DECLARE(flora_00);
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
+
+/*
+ * 레이아웃 (실제 보이는 68x68 기준):
+ *
+ *  ┌─────────────────────────────────────┐
+ *  │  flora_00 이미지 (140x68 → 잘림)   │
+ *  │                                     │
+ *  │  ┌──────────────┐                  │
+ *  │  │ 🔋 배터리    │ ← 우상단 오버레이 │
+ *  │  │ 📶 연결      │                  │
+ *  │  └──────────────┘                  │
+ *  └─────────────────────────────────────┘
+ *
+ * canvas/rotate 없이 lv_label + lv_bar로 직접 이미지 위에 오버드로우
+ */
 
 struct output_status_state {
     struct zmk_endpoint_instance selected_endpoint;
@@ -36,62 +49,68 @@ struct output_status_state {
     bool active_profile_bonded;
 };
 
-struct layer_status_state {
-    uint8_t index;
-    const char *label;
-};
+/* 위젯 내 LVGL 오브젝트 인덱스 */
+#define OBJ_IDX_IMAGE        0
+#define OBJ_IDX_BAT_OUTLINE  1
+#define OBJ_IDX_BAT_FILL     2
+#define OBJ_IDX_BAT_TIP      3
+#define OBJ_IDX_BOLT_LABEL   4
+#define OBJ_IDX_CONN_LABEL   5
 
-/*
- * Layout (160x68 display, only rightmost ~68px is visible on eyelash_sofle):
- *
- *  ┌──────────────────────────────────────────┐
- *  │  [flora_00 image — 140x68, clipped left] │
- *  │                         ┌────────────────┤
- *  │                         │  battery icon  │  ← top canvas (68x68), drawn on top
- *  │                         │  connect icon  │
- *  │                         └────────────────┤
- *  └──────────────────────────────────────────┘
- *
- * Image is placed at x=0, canvas at x=92 (160-68).
- * Only the rightmost 68px is visible; image bleeds in from behind.
- */
-static void draw_top(lv_obj_t *widget, lv_color_t cbuf[], const struct status_state *state) {
-    lv_obj_t *canvas = lv_obj_get_child(widget, 1); /* child 0 = image, child 1 = canvas */
+/* 배터리 게이지 위치 (이미지 위 우상단, 화면 좌표 기준) */
+#define BAT_X   34   /* 우측에서 34px 안쪽 */
+#define BAT_Y    2
+#define BAT_W   28
+#define BAT_H   12
+#define BAT_TIP_W  3
+#define BAT_TIP_H  6
 
-    lv_draw_label_dsc_t label_dsc;
-    init_label_dsc(&label_dsc, LVGL_FOREGROUND, &lv_font_montserrat_16, LV_TEXT_ALIGN_RIGHT);
-    lv_draw_rect_dsc_t rect_black_dsc;
-    init_rect_dsc(&rect_black_dsc, LVGL_BACKGROUND);
+/* 연결 아이콘 위치 */
+#define CONN_X  50
+#define CONN_Y   0
 
-    /* Fill background */
-    lv_canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
+static void update_battery(lv_obj_t *widget, const struct status_state *state) {
+    /* 배터리 외곽 */
+    lv_obj_t *outline = lv_obj_get_child(widget, OBJ_IDX_BAT_OUTLINE);
+    /* 배터리 채움 바 */
+    lv_obj_t *fill = lv_obj_get_child(widget, OBJ_IDX_BAT_FILL);
+    /* 배터리 팁 */
+    lv_obj_t *tip = lv_obj_get_child(widget, OBJ_IDX_BAT_TIP);
+    /* 번개 라벨 */
+    lv_obj_t *bolt_label = lv_obj_get_child(widget, OBJ_IDX_BOLT_LABEL);
 
-    /* Draw battery */
-    draw_battery(canvas, state);
+    (void)outline; /* 외곽선은 스타일로 고정, 위치만 설정됨 */
+    (void)tip;
 
-    /* Draw output/connection status */
-    char output_text[10] = {};
+    /* 배터리 잔량에 따라 채움 너비 조정 (최소 2px) */
+    int fill_w = (state->battery * (BAT_W - 4)) / 100;
+    if (fill_w < 2) fill_w = 2;
+    lv_obj_set_size(fill, fill_w, BAT_H - 4);
+
+    /* 충전 중이면 번개 아이콘 표시 */
+    lv_obj_set_hidden(bolt_label, !state->charging);
+}
+
+static void update_connection(lv_obj_t *widget, const struct status_state *state) {
+    lv_obj_t *conn_label = lv_obj_get_child(widget, OBJ_IDX_CONN_LABEL);
+
+    const char *sym = "";
     switch (state->selected_endpoint.transport) {
     case ZMK_TRANSPORT_USB:
-        strcat(output_text, LV_SYMBOL_USB);
+        sym = LV_SYMBOL_USB;
         break;
     case ZMK_TRANSPORT_BLE:
         if (state->active_profile_bonded) {
-            if (state->active_profile_connected) {
-                strcat(output_text, LV_SYMBOL_WIFI);
-            } else {
-                strcat(output_text, LV_SYMBOL_CLOSE);
-            }
+            sym = state->active_profile_connected ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE;
         } else {
-            strcat(output_text, LV_SYMBOL_SETTINGS);
+            sym = LV_SYMBOL_SETTINGS;
         }
         break;
     }
-    lv_canvas_draw_text(canvas, 0, 0, CANVAS_SIZE, &label_dsc, output_text);
-
-    /* Rotate canvas */
-    rotate_canvas(canvas, cbuf);
+    lv_label_set_text(conn_label, sym);
 }
+
+/* ── 이벤트 콜백 ── */
 
 static void set_battery_status(struct zmk_widget_status *widget,
                                struct battery_status_state state) {
@@ -99,7 +118,7 @@ static void set_battery_status(struct zmk_widget_status *widget,
     widget->state.charging = state.usb_present;
 #endif
     widget->state.battery = state.level;
-    draw_top(widget->obj, widget->cbuf, &widget->state);
+    update_battery(widget->obj, &widget->state);
 }
 
 static void battery_status_update_cb(struct battery_status_state state) {
@@ -130,7 +149,7 @@ static void set_output_status(struct zmk_widget_status *widget,
     widget->state.active_profile_index = state->active_profile_index;
     widget->state.active_profile_connected = state->active_profile_connected;
     widget->state.active_profile_bonded = state->active_profile_bonded;
-    draw_top(widget->obj, widget->cbuf, &widget->state);
+    update_connection(widget->obj, &widget->state);
 }
 
 static void output_status_update_cb(struct output_status_state state) {
@@ -157,19 +176,63 @@ ZMK_SUBSCRIPTION(widget_output_status, zmk_usb_conn_state_changed);
 ZMK_SUBSCRIPTION(widget_output_status, zmk_ble_active_profile_changed);
 #endif
 
+/* ── 초기화 ── */
+
 int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
     widget->obj = lv_obj_create(parent);
-    lv_obj_set_size(widget->obj, 160, 68);
+    lv_obj_set_size(widget->obj, 68, 68);
+    /* 부모 오브젝트 배경/테두리 제거 */
+    lv_obj_set_style_bg_opa(widget->obj, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(widget->obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(widget->obj, 0, LV_PART_MAIN);
 
-    /* Child 0: flora_00 image — placed at left edge, bleeds under canvas */
+    /* Child 0: flora_00 이미지 — 우측 끝에서 140px 왼쪽 배치 → 우측 68px가 보임 */
     lv_obj_t *art = lv_img_create(widget->obj);
     lv_img_set_src(art, &flora_00);
-    lv_obj_align(art, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_pos(art, -(140 - 68), 0);  /* x = -72 */
 
-    /* Child 1: top canvas — battery + connection, pinned to right edge */
-    lv_obj_t *top = lv_canvas_create(widget->obj);
-    lv_obj_align(top, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_canvas_set_buffer(top, widget->cbuf, CANVAS_SIZE, CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
+    /* Child 1: 배터리 외곽선 */
+    lv_obj_t *bat_outline = lv_obj_create(widget->obj);
+    lv_obj_set_size(bat_outline, BAT_W, BAT_H);
+    lv_obj_set_pos(bat_outline, BAT_X, BAT_Y);
+    lv_obj_set_style_bg_opa(bat_outline, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(bat_outline, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(bat_outline, 1, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(bat_outline, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(bat_outline, 1, LV_PART_MAIN);
+
+    /* Child 2: 배터리 채움 바 */
+    lv_obj_t *bat_fill = lv_obj_create(widget->obj);
+    lv_obj_set_size(bat_fill, (75 * (BAT_W - 4)) / 100, BAT_H - 4);  /* 초기값 75% */
+    lv_obj_set_pos(bat_fill, BAT_X + 2, BAT_Y + 2);
+    lv_obj_set_style_bg_color(bat_fill, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(bat_fill, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(bat_fill, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(bat_fill, 0, LV_PART_MAIN);
+
+    /* Child 3: 배터리 팁 */
+    lv_obj_t *bat_tip = lv_obj_create(widget->obj);
+    lv_obj_set_size(bat_tip, BAT_TIP_W, BAT_TIP_H);
+    lv_obj_set_pos(bat_tip, BAT_X + BAT_W, BAT_Y + (BAT_H - BAT_TIP_H) / 2);
+    lv_obj_set_style_bg_color(bat_tip, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(bat_tip, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(bat_tip, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(bat_tip, 1, LV_PART_MAIN);
+
+    /* Child 4: 충전 번개 아이콘 */
+    lv_obj_t *bolt_label = lv_label_create(widget->obj);
+    lv_label_set_text(bolt_label, LV_SYMBOL_CHARGE);
+    lv_obj_set_style_text_color(bolt_label, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(bolt_label, &lv_font_montserrat_10, LV_PART_MAIN);
+    lv_obj_set_pos(bolt_label, BAT_X + 8, BAT_Y - 1);
+    lv_obj_set_hidden(bolt_label, true);  /* 충전 중일 때만 표시 */
+
+    /* Child 5: 연결 상태 아이콘 */
+    lv_obj_t *conn_label = lv_label_create(widget->obj);
+    lv_label_set_text(conn_label, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_color(conn_label, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(conn_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_pos(conn_label, CONN_X, CONN_Y);
 
     sys_slist_append(&widgets, &widget->node);
     widget_battery_status_init();
